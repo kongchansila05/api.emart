@@ -1,0 +1,33 @@
+# ── .env additions ────────────────────────────────────────────────────────────
+R2_ACCOUNT_ID=your_cloudflare_account_id
+R2_ACCESS_KEY=your_r2_access_key_id
+R2_SECRET_KEY=your_r2_secret_access_key
+R2_BUCKET=your_bucket_name
+R2_PUBLIC_URL=https://pub-xxxxxxxxxxxx.r2.dev   # or your custom domain
+
+# ── go.mod — add this dependency ───────────────────────────────────────────────
+# go get github.com/aws/aws-sdk-go-v2
+# go get github.com/aws/aws-sdk-go-v2/config
+# go get github.com/aws/aws-sdk-go-v2/credentials
+# go get github.com/aws/aws-sdk-go-v2/service/s3
+
+# ── DB migration ───────────────────────────────────────────────────────────────
+# If using GORM AutoMigrate, it will:
+#   - add column `image` (varchar)
+#   - the old `icon` column stays unless you drop it manually:
+#     ALTER TABLE categories DROP COLUMN icon;
+
+# ── Register in main.go (wire everything together) ─────────────────────────────
+# r2, err := services.NewR2Service(
+#     os.Getenv("R2_ACCOUNT_ID"),
+#     os.Getenv("R2_ACCESS_KEY"),
+#     os.Getenv("R2_SECRET_KEY"),
+#     os.Getenv("R2_BUCKET"),
+#     os.Getenv("R2_PUBLIC_URL"),
+# )
+#
+# uploadCtrl   := controllers.NewUploadController(r2)
+# categoryCtrl := controllers.NewCategoryController(db, r2)
+#
+# admin := r.Group("/api/admin", authMiddleware)
+# admin.POST("/upload", uploadCtrl.UploadImage)
