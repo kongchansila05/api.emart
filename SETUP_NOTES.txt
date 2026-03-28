@@ -31,3 +31,130 @@ R2_PUBLIC_URL=https://pub-xxxxxxxxxxxx.r2.dev   # or your custom domain
 #
 # admin := r.Group("/api/admin", authMiddleware)
 # admin.POST("/upload", uploadCtrl.UploadImage)
+
+Chansila@80331Web
+
+ssh root@your_droplet_ip
+
+wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
+tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+go version
+
+mkdir -p /var/www
+cd /var/www
+git clone https://github.com/kongchansila05/api.emart.git
+cd api.emart
+
+go mod tidy
+go build -o app .
+./app
+
+nano /etc/systemd/system/myapp.service
+
+[Unit]
+Description=My Go App
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/var/www/api.emart
+ExecStart=/var/www/api.emart/app
+Restart=always
+RestartSec=5
+Environment=GIN_MODE=release
+Environment=PORT=8080
+
+[Install]
+WantedBy=multi-user.target
+
+
+systemctl daemon-reload
+systemctl enable myapp
+systemctl start myapp
+systemctl status myapp
+
+
+apt install -y nginx
+nano /etc/nginx/sites-available/myapp
+
+
+server {
+    listen 80;
+    server_name your_domain_or_ip;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+
+
+server {
+    listen 3100;
+    server_name api.e.2m-sy.com;
+
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'Chansila@80331Web!';
+FLUSH PRIVILEGES;
+EXIT;
+
+
+
+
+cd /var/www
+git clone https://github.com/kongchansila05/frontend.emart.git
+cd frontend.emart
+
+
+nano /var/www/frontend.emart/.env.production
+
+cd /var/www/frontend.emart
+npm install
+npm run build
+
+
+server {
+    listen 80;
+    server_name e.2m-sy.com;
+    root /var/www/frontend.emart/dist;
+    index index.html;
+
+    # Handle Vue Router (SPA)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache static assets
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+    }
+}
+
+
+ln -s /etc/nginx/sites-available/e.2m-sy.com /etc/nginx/sites-enabled/
+nginx -t
+systemctl restart nginx
+
+
+apt install -y certbot python3-certbot-nginx
+certbot --nginx -d api.e.2m-sy.com
+```
+
+Follow the prompts — Certbot will **automatically update** your Nginx config to redirect HTTP → HTTPS.
+
+After this, your app will be live at:
+```
+https://api.e.2m-sy.com

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"    // ← add this
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"project-api/models"
@@ -41,8 +41,8 @@ type adminRegisterRequest struct {
 	Email     string `json:"email"      binding:"required,email"`
 	Password  string `json:"password"   binding:"required,min=6"`
 	Phone     string `json:"phone"`
-	RoleName  string `json:"role"`        // "admin" | "client" | any existing role name (default: "client")
-	PostLimit int    `json:"post_limit"`  // 0 → default per role: admin=9999, client=10
+	RoleName  string `json:"role"`       // "admin" | "client" | any existing role name (default: "client")
+	PostLimit int    `json:"post_limit"` // 0 → default per role: admin=9999, client=10
 }
 
 type loginRequest struct {
@@ -109,7 +109,7 @@ func (ac *AuthController) AdminRegister(c *gin.Context) {
 		return
 	}
 
-	// Resolve role — default to "admin" if not provided (staff endpoint)
+	// Resolve role — default to "client" if not provided
 	roleName := req.RoleName
 	if roleName == "" {
 		roleName = "client"
@@ -211,8 +211,8 @@ func (ac *AuthController) Login(c *gin.Context) {
 	})
 }
 
-// GoogleLogin — verifies a Google ID token and finds or creates a client user.
-// POST /auth/google  { "token": "<google_id_token>" }
+// GoogleLogin — verifies a Firebase Google ID token and finds or creates a client user.
+// POST /auth/google  { "token": "<firebase_id_token>" }
 func (ac *AuthController) GoogleLogin(c *gin.Context) {
 	var req struct {
 		Token string `json:"token" binding:"required"`
@@ -222,9 +222,10 @@ func (ac *AuthController) GoogleLogin(c *gin.Context) {
 		return
 	}
 
-	googleUser, err := verifyGoogleToken(req.Token)
+	googleUser, err := verifyFirebaseGoogleToken(req.Token)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Google token"})
+		fmt.Printf("[Google Auth] Token verification failed: %v\n", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Firebase Google token: " + err.Error()})
 		return
 	}
 
@@ -293,77 +294,78 @@ func (ac *AuthController) GoogleLogin(c *gin.Context) {
 	})
 }
 
-// ─── Google token verification ────────────────────────────────────────────────
+// ─── Firebase Google Token Verification ──────────────────────────────────────
 
 type googleUserInfo struct {
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	Picture string `json:"picture"`
+	Email   string
+	Name    string
+	Picture string
 }
 
-// verifyGoogleToken accepts either an ID token or access token.
-func verifyGoogleToken(token string) (*googleUserInfo, error) {
-	// Try userinfo endpoint with access token first
-	req, _ := http.NewRequest("GET", "https://www.googleapis.com/oauth2/v3/userinfo", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+// verifyFirebaseGoogleToken decodes and validates a Firebase ID token issued
+// after a Google sign-in. It mirrors the same JWT-decode approach used by
+// verifyFirebasePhoneToken — no extra HTTP round-trips to Google's endpoints.
+func verifyFirebaseGoogleToken(idToken string) (*googleUserInfo, error) {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format — got %d parts", len(parts))
+	}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Decode payload (base64url, no padding)
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		var info struct {
-			Email   string `json:"email"`
-			Name    string `json:"name"`
-			Picture string `json:"picture"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-			return nil, err
-		}
-		if info.Email != "" {
-			return &googleUserInfo{
-				Email:   info.Email,
-				Name:    info.Name,
-				Picture: info.Picture,
-			}, nil
-		}
+		return nil, fmt.Errorf("base64 decode failed: %v", err)
 	}
 
-	// Fallback: try tokeninfo endpoint (for ID tokens)
-	resp2, err := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + token)
-	if err != nil {
-		return nil, err
-	}
-	defer resp2.Body.Close()
+	fmt.Printf("[Google Auth] Raw payload: %s\n", string(decoded))
 
-	if resp2.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("invalid token")
+	var claims struct {
+		Sub      string `json:"sub"`
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Picture  string `json:"picture"`
+		Exp      int64  `json:"exp"`
+		Iss      string `json:"iss"`
+		Firebase struct {
+			SignInProvider string `json:"sign_in_provider"`
+		} `json:"firebase"`
 	}
 
-	var info2 struct {
-		Email   string `json:"email"`
-		Name    string `json:"name"`
-		Picture string `json:"picture"`
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return nil, fmt.Errorf("JSON unmarshal failed: %v", err)
 	}
-	if err := json.NewDecoder(resp2.Body).Decode(&info2); err != nil {
-		return nil, err
+
+	fmt.Printf("[Google Auth] Claims — sub: %s, email: %s, iss: %s, provider: %s\n",
+		claims.Sub, claims.Email, claims.Iss, claims.Firebase.SignInProvider)
+
+	// Validate expiry
+	if time.Now().Unix() > claims.Exp {
+		return nil, fmt.Errorf("token expired at %d, now %d", claims.Exp, time.Now().Unix())
 	}
-	if info2.Email == "" {
-		return nil, fmt.Errorf("no email in token")
+
+	// Validate issuer
+	if !strings.Contains(claims.Iss, "securetoken.google.com") {
+		return nil, fmt.Errorf("invalid issuer: %s", claims.Iss)
+	}
+
+	// Validate sign-in provider
+	if claims.Firebase.SignInProvider != "google.com" {
+		return nil, fmt.Errorf("unexpected sign_in_provider: %s (expected google.com)", claims.Firebase.SignInProvider)
+	}
+
+	// Validate email present
+	if claims.Email == "" {
+		return nil, fmt.Errorf("no email in token claims")
 	}
 
 	return &googleUserInfo{
-		Email:   info2.Email,
-		Name:    info2.Name,
-		Picture: info2.Picture,
+		Email:   claims.Email,
+		Name:    claims.Name,
+		Picture: claims.Picture,
 	}, nil
 }
 
-// GoogleRegisterClient — registers a new client account via Google.
-// This is for the marketplace mobile/web app, NOT the admin panel.
+// GoogleRegisterClient — registers a new client account via Firebase Google.
 // POST /auth/google/register
 func (ac *AuthController) GoogleRegisterClient(c *gin.Context) {
 	var req struct {
@@ -374,9 +376,10 @@ func (ac *AuthController) GoogleRegisterClient(c *gin.Context) {
 		return
 	}
 
-	googleUser, err := verifyGoogleToken(req.Token)
+	googleUser, err := verifyFirebaseGoogleToken(req.Token)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Google token"})
+		fmt.Printf("[Google Auth] Token verification failed: %v\n", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Firebase Google token: " + err.Error()})
 		return
 	}
 
@@ -476,13 +479,12 @@ func (ac *AuthController) GoogleRegisterClient(c *gin.Context) {
 	})
 }
 
-
-// GoogleRegisterStaff — registers/updates a staff account via Google with a specific role.
+// GoogleRegisterStaff — registers/updates a staff account via Firebase Google with a specific role.
 // POST /auth/google/register/staff  { "token": "...", "role": "admin" }
 func (ac *AuthController) GoogleRegisterStaff(c *gin.Context) {
 	var req struct {
-		Token    string `json:"token"    binding:"required"`
-		RoleName string `json:"role"     binding:"required"`
+		Token    string `json:"token" binding:"required"`
+		RoleName string `json:"role"  binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -495,9 +497,10 @@ func (ac *AuthController) GoogleRegisterStaff(c *gin.Context) {
 		return
 	}
 
-	googleUser, err := verifyGoogleToken(req.Token)
+	googleUser, err := verifyFirebaseGoogleToken(req.Token)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Google token"})
+		fmt.Printf("[Google Auth] Token verification failed: %v\n", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Firebase Google token: " + err.Error()})
 		return
 	}
 
@@ -513,10 +516,10 @@ func (ac *AuthController) GoogleRegisterStaff(c *gin.Context) {
 	if err == nil {
 		// User exists — restore if soft-deleted and update role
 		updates := map[string]interface{}{
-			"role_id":    role.ID,
-			"avatar":     googleUser.Picture,
-			"name":       googleUser.Name,
-			"is_active":  true,
+			"role_id":   role.ID,
+			"avatar":    googleUser.Picture,
+			"name":      googleUser.Name,
+			"is_active": true,
 		}
 		if existing.DeletedAt.Valid {
 			updates["deleted_at"] = nil
@@ -583,7 +586,7 @@ func (ac *AuthController) GoogleRegisterStaff(c *gin.Context) {
 	})
 }
 
-
+// ─── Firebase Phone Token Verification ───────────────────────────────────────
 
 // FirebasePhoneLogin — verifies a Firebase phone ID token.
 // POST /auth/phone  { "token": "<firebase_id_token>", "phone": "+85512345678", "name": "optional" }
@@ -601,7 +604,6 @@ func (ac *AuthController) FirebasePhoneLogin(c *gin.Context) {
 	// Verify Firebase ID token
 	phoneUser, err := verifyFirebasePhoneToken(req.Token)
 	if err != nil {
-		// ── Log the actual error for debugging ───────────────────────────────
 		fmt.Printf("[Phone Auth] Token verification failed: %v\n", err)
 		fmt.Printf("[Phone Auth] Token (first 50 chars): %s\n", req.Token[:min(50, len(req.Token))])
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Firebase token: " + err.Error()})
@@ -678,7 +680,7 @@ func (ac *AuthController) FirebasePhoneLogin(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"token":  token,
-		"is_new": isNew, // ← fixed: was hardcoded false
+		"is_new": isNew,
 		"user": authUserResponse{
 			ID:        user.ID,
 			Name:      user.Name,
@@ -693,25 +695,24 @@ func (ac *AuthController) FirebasePhoneLogin(c *gin.Context) {
 
 // min helper for Go versions < 1.21
 func min(a, b int) int {
-	if a < b { return a }
+	if a < b {
+		return a
+	}
 	return b
 }
-
-// ─── Firebase Phone Token Verification ───────────────────────────────────────
 
 type firebasePhoneUser struct {
 	Phone string
 	UID   string
 }
 
-	// verifyFirebasePhoneToken — verifies Firebase phone ID token using public keys.
+// verifyFirebasePhoneToken — verifies Firebase phone ID token using public keys.
 func verifyFirebasePhoneToken(idToken string) (*firebasePhoneUser, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid JWT format — got %d parts", len(parts))
 	}
 
-	// Decode payload without padding issues
 	payload := parts[1]
 	decoded, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {

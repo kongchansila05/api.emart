@@ -27,7 +27,9 @@ func main() {
 
 	// ── CORS ──────────────────────────────────────────────────────────────────
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     allowedOrigins(),
+		// AllowOrigins:     allowedOrigins(),
+		// AllowOrigins:     []string{"http://localhost:3000", "http://localhost:5173", "http://localhost:8080", "http://localhost:8081"},
+		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
@@ -44,7 +46,7 @@ func main() {
 	routes.Register(r)
 
 	// ── Listen ────────────────────────────────────────────────────────────────
-	port := os.Getenv("PORT")
+	port := os.Getenv("APP_PORT")
 	if port == "" {
 		port = "8080"
 	}

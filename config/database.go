@@ -97,6 +97,8 @@ func migrate() {
 		&models.Post{},
 		&models.PostLike{},  
 		&models.Banner{},      // ← add
+		&models.DirectConversation{},
+		&models.DirectMessage{},
 	)
 	if err != nil {
 		log.Fatalf("[DB] migration failed: %v", err)

@@ -31,16 +31,22 @@ func Register(r *gin.Engine) {
 	}
 
 	// ── Controllers ──────────────────────────────────────────────────────────
-	authCtrl   := controllers.NewAuthController(db)
-	postCtrl   := controllers.NewPostController(postSvc)
-	catCtrl    := controllers.NewCategoryController(db, r2)
-	userCtrl   := controllers.NewUserController(db, postSvc)
-	uploadCtrl := controllers.NewUploadController(r2)
-	bannerCtrl := controllers.NewBannerController(db)   // ← add
+	authCtrl        := controllers.NewAuthController(db)
+	postCtrl        := controllers.NewPostController(postSvc)
+	catCtrl         := controllers.NewCategoryController(db, r2)
+	userCtrl        := controllers.NewUserController(db, postSvc)
+	uploadCtrl      := controllers.NewUploadController(r2)
+	bannerCtrl      := controllers.NewBannerController(db)
+	directChatCtrl  := controllers.NewDirectChatController(db, services.GlobalHub)
 
 	// ── Middleware bundles ───────────────────────────────────────────────────
 	auth  := middleware.Authenticate()
 	admin := middleware.RequireAdmin()
+
+	// ── WebSocket — Direct Chat only ─────────────────────────────────────────
+	r.GET("/ws", func(c *gin.Context) {
+		controllers.ServeWSCombined(c, directChatCtrl, services.GlobalHub)
+	})
 
 	api := r.Group("/api")
 
@@ -48,21 +54,18 @@ func Register(r *gin.Engine) {
 	// PUBLIC — No authentication required
 	// ════════════════════════════════════════════════════════════════════════
 	{
-		api.POST("/auth/register/client", authCtrl.Register)
-		api.POST("/auth/login", authCtrl.Login)
-		api.POST("/auth/google",         authCtrl.GoogleLogin)   
-		api.POST("/auth/google/register",  authCtrl.GoogleRegisterClient)  // ← add
-		api.POST("/auth/google/register/staff", authCtrl.GoogleRegisterStaff)  // ← add
+		api.POST("/auth/register/client",       authCtrl.Register)
+		api.POST("/auth/login",                 authCtrl.Login)
+		api.POST("/auth/google",                authCtrl.GoogleLogin)
+		api.POST("/auth/google/register",       authCtrl.GoogleRegisterClient)
+		api.POST("/auth/google/register/staff", authCtrl.GoogleRegisterStaff)
+		api.POST("/auth/phone",                 authCtrl.FirebasePhoneLogin)
 
-		api.POST("/auth/phone", authCtrl.FirebasePhoneLogin)
-
-
-		api.GET("/posts", postCtrl.GetAll)
-		api.GET("/posts/:id", postCtrl.GetOne)
-		api.GET("/categories", catCtrl.GetActive)
-		api.GET("/categories/:id/sub-categories",       catCtrl.GetSubCategories)
-		// Public banner endpoints
-		api.GET("/banners",            bannerCtrl.GetActive)      // list active banners
+		api.GET("/posts",                             postCtrl.GetAll)
+		api.GET("/posts/:id",                         postCtrl.GetOne)
+		api.GET("/categories",                        catCtrl.GetActive)
+		api.GET("/categories/:id/sub-categories",     catCtrl.GetSubCategories)
+		api.GET("/banners",                           bannerCtrl.GetActive)
 	}
 
 	// ════════════════════════════════════════════════════════════════════════
@@ -73,13 +76,18 @@ func Register(r *gin.Engine) {
 	{
 		protected.GET("/me", userCtrl.GetMe)
 
-		protected.GET("/my-posts", postCtrl.GetMine)
-		protected.POST("/posts", postCtrl.Create)
-		protected.PUT("/posts/:id", postCtrl.Update)
-		protected.DELETE("/posts/:id", postCtrl.Delete)
-		protected.POST("/posts/:id/like", postCtrl.ToggleLike)  // ← add this
+		// ── Posts ────────────────────────────────────────────────────────────
+		protected.GET("/my-posts",          postCtrl.GetMine)
+		protected.POST("/posts",            postCtrl.Create)
+		protected.PUT("/posts/:id",         postCtrl.Update)
+		protected.DELETE("/posts/:id",      postCtrl.Delete)
+		protected.POST("/posts/:id/like",   postCtrl.ToggleLike)
 
-		
+		// ── Direct Chat ──────────────────────────────────────────────────────
+		protected.POST("/direct/start",                      directChatCtrl.StartDirectConversation) // ← add back
+		protected.POST("/direct/conversations/:id/messages", directChatCtrl.SendDirectMessage)
+		protected.GET("/direct/conversations",               directChatCtrl.GetMyDirectConversations)
+		protected.GET("/direct/conversations/:id/messages",  directChatCtrl.GetDirectMessages)
 	}
 
 	// ════════════════════════════════════════════════════════════════════════
@@ -88,30 +96,30 @@ func Register(r *gin.Engine) {
 	adminGroup := api.Group("/admin")
 	adminGroup.Use(auth, admin)
 	{
-		// Dashboard
+		// ── Dashboard ────────────────────────────────────────────────────────
 		adminGroup.GET("/stats", userCtrl.GetStats)
 
 		// ── Auth ─────────────────────────────────────────────────────────────
-		api.POST("/auth/register/staff", authCtrl.AdminRegister)
+		adminGroup.POST("/auth/register/staff", authCtrl.AdminRegister)
 
 		// ── Upload ───────────────────────────────────────────────────────────
 		adminGroup.POST("/upload", uploadCtrl.UploadImage)
 
 		// ── Users ────────────────────────────────────────────────────────────
-		adminGroup.GET("/users", userCtrl.AdminGetUsers)
-		adminGroup.PUT("/users/:id", userCtrl.AdminUpdateUser)
-		adminGroup.DELETE("/users/:id", userCtrl.AdminDeleteUser)
-		adminGroup.PATCH("/users/:id/limit", userCtrl.AdminSetPostLimit)
-		adminGroup.PATCH("/users/:id/image-limit", userCtrl.AdminSetImageLimit)  // ← new
-		adminGroup.PATCH("/users/:id/status", userCtrl.AdminToggleStatus)
-		
+		adminGroup.GET("/users",                   userCtrl.AdminGetUsers)
+		adminGroup.PUT("/users/:id",               userCtrl.AdminUpdateUser)
+		adminGroup.DELETE("/users/:id",            userCtrl.AdminDeleteUser)
+		adminGroup.PATCH("/users/:id/limit",       userCtrl.AdminSetPostLimit)
+		adminGroup.PATCH("/users/:id/image-limit", userCtrl.AdminSetImageLimit)
+		adminGroup.PATCH("/users/:id/status",      userCtrl.AdminToggleStatus)
 
 		// ── Categories ───────────────────────────────────────────────────────
-		adminGroup.GET("/categories", catCtrl.AdminGetAll)
-		adminGroup.POST("/categories", catCtrl.AdminCreate)
-		adminGroup.PUT("/categories/:id", catCtrl.AdminUpdate)
-		adminGroup.DELETE("/categories/:id", catCtrl.AdminDelete)
-		// ── SubCategories ─────────────────────────────────────────────────────────────
+		adminGroup.GET("/categories",                                        catCtrl.AdminGetAll)
+		adminGroup.POST("/categories",                                       catCtrl.AdminCreate)
+		adminGroup.PUT("/categories/:id",                                    catCtrl.AdminUpdate)
+		adminGroup.DELETE("/categories/:id",                                 catCtrl.AdminDelete)
+
+		// ── SubCategories ────────────────────────────────────────────────────
 		adminGroup.GET("/categories/:id/sub-categories",                     catCtrl.AdminGetSubCategories)
 		adminGroup.POST("/categories/:id/sub-categories",                    catCtrl.AdminCreateSubCategory)
 		adminGroup.PUT("/categories/:id/sub-categories/:sub_id",             catCtrl.AdminUpdateSubCategory)
@@ -119,29 +127,35 @@ func Register(r *gin.Engine) {
 		adminGroup.PATCH("/categories/:id/sub-categories/:sub_id/status",    catCtrl.AdminToggleSubCategoryStatus)
 
 		// ── Roles ────────────────────────────────────────────────────────────
-		adminGroup.GET("/roles", userCtrl.GetRoles)
-		adminGroup.GET("/roles/staff", userCtrl.GetStaffRoles)
-		adminGroup.POST("/roles", userCtrl.CreateRole)
-		adminGroup.PUT("/roles/:id", userCtrl.UpdateRole)
-		adminGroup.DELETE("/roles/:id", userCtrl.DeleteRole)
+		adminGroup.GET("/roles",         userCtrl.GetRoles)
+		adminGroup.GET("/roles/staff",   userCtrl.GetStaffRoles)
+		adminGroup.POST("/roles",        userCtrl.CreateRole)
+		adminGroup.PUT("/roles/:id",     userCtrl.UpdateRole)
+		adminGroup.DELETE("/roles/:id",  userCtrl.DeleteRole)
 
 		// ── Permissions ──────────────────────────────────────────────────────
-		adminGroup.GET("/permissions", userCtrl.GetPermissions)
-		adminGroup.POST("/permissions", userCtrl.CreatePermission)
+		adminGroup.GET("/permissions",        userCtrl.GetPermissions)
+		adminGroup.POST("/permissions",       userCtrl.CreatePermission)
 		adminGroup.DELETE("/permissions/:id", userCtrl.DeletePermission)
 
 		// ── Posts ────────────────────────────────────────────────────────────
-		adminGroup.GET("/posts", postCtrl.AdminGetAll)
-		adminGroup.POST("/posts",               postCtrl.AdminCreatePost)   // ← add this
-		adminGroup.PUT("/posts/:id",            postCtrl.AdminUpdatePost)   // ← add this
+		adminGroup.GET("/posts",              postCtrl.AdminGetAll)
+		adminGroup.POST("/posts",             postCtrl.AdminCreatePost)
+		adminGroup.PUT("/posts/:id",          postCtrl.AdminUpdatePost)
 		adminGroup.PATCH("/posts/:id/status", postCtrl.AdminUpdateStatus)
-		adminGroup.DELETE("/posts/:id", postCtrl.AdminDelete)
-		
-		// ── Banners ───────────────────────────────────────────────────────────
-		adminGroup.GET("/banners",               bannerCtrl.AdminGetAll)
-		adminGroup.POST("/banners",              bannerCtrl.AdminCreate)
-		adminGroup.PUT("/banners/:id",           bannerCtrl.AdminUpdate)
-		adminGroup.PATCH("/banners/:id/status",  bannerCtrl.AdminToggleActive)
-		adminGroup.DELETE("/banners/:id",        bannerCtrl.AdminDelete)
+		adminGroup.DELETE("/posts/:id",       postCtrl.AdminDelete)
+
+		// ── Banners ──────────────────────────────────────────────────────────
+		adminGroup.GET("/banners",              bannerCtrl.AdminGetAll)
+		adminGroup.POST("/banners",             bannerCtrl.AdminCreate)
+		adminGroup.PUT("/banners/:id",          bannerCtrl.AdminUpdate)
+		adminGroup.PATCH("/banners/:id/status", bannerCtrl.AdminToggleActive)
+		adminGroup.DELETE("/banners/:id",       bannerCtrl.AdminDelete)
+
+		// ── Direct Chat ──────────────────────────────────────────────────────
+		adminGroup.GET("/direct-conversations",               directChatCtrl.AdminGetDirectConversations)
+		adminGroup.GET("/direct-conversations/:id/messages",  directChatCtrl.AdminGetDirectMessages)
+		adminGroup.DELETE("/direct-conversations/:id",        directChatCtrl.AdminDeleteDirectConversation)
+		adminGroup.GET("/online-users",                      directChatCtrl.OnlineUsers)  // ← add this
 	}
 }
